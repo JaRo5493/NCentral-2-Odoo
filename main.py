@@ -95,22 +95,27 @@ def parse_description_to_json(description: str) -> str:
 
 def get_customer_id(customer_name: str) -> Optional[int]:
     try:
-        conn = psycopg2.connect(
+        logger.debug(f"Connecting to the database to get customer ID for: {customer_name}")
+        with psycopg2.connect(
             dbname=config_api['database'],
             user=config_api['user'],
             password=config_api['password'],
             host=config_api['host'],
-            port=config_api['port']
-        )
-        cursor = conn.cursor()
-        cursor.execute("SELECT odoo_customer_id FROM n_central_customers WHERE customername = %s", (customer_name,))
-        result = cursor.fetchone()
-        conn.close()
-        if result:
-            return result[0]
+            port=config_api['port'],
+            connect_timeout=10
+        ) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT odoo_customer_id FROM n_central_customers WHERE customername = %s", (customer_name,))
+                result = cursor.fetchone()
+                if result:
+                    logger.debug(f"Customer ID for {customer_name}: {result[0]}")
+                    return result[0]
+                else:
+                    logger.debug(f"No customer ID found for {customer_name}")
+                    return None
     except Exception as e:
         logger.error(f"Database query failed: {e}")
-    return None
+        return 0
 
 
 @app.post("/ticketRequests")
@@ -120,18 +125,26 @@ async def create_ticket(item: Item, verification_dep=Depends(verification)):
             json_result = parse_description_to_json(item.details)
             parsed_dict = json.loads(json_result)
             customer_id = get_customer_id(parsed_dict['Customer'])
+
+            if customer_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Customer not found or invalid."
+                )
         except Exception as e:
             logger.error(f"Couldn't Parse JSON: {e}")
             customer_id = 0
+
         if item.action == "CREATE":
+            logger.debug(f"Item: {item}")
             new_id = models.execute_kw(odoo_db, odoo_uid, odoo_api_key, 'helpdesk.ticket', 'create', [
                 {
                     'name': item.title,
                     'partner_id': customer_id,
-                    'description': json_result,
+                    'description': item.details,
                     'area_id': 1,
                     'team_id': 5,
-                    'ticket_type_id': 2,
+                    'ticket_type_id': 6,
                     'put_off_email': True,
                 }
             ])
